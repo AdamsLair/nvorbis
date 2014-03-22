@@ -1,6 +1,6 @@
 ﻿/****************************************************************************
  * NVorbis                                                                  *
- * Copyright (C) 2014, Andrew Ward <afward@gmail.com>                       *
+ * Copyright (C) 2012, Andrew Ward <afward@gmail.com>                       *
  *                                                                          *
  * See COPYING for license terms (Ms-PL).                                   *
  *                                                                          *
@@ -15,39 +15,23 @@ namespace NVorbis.Ogg
 {
     class Packet : DataPacket
     {
-        long _offset;                       // 8
-        int _length;                        // 4
-        int _curOfs;                        // 4
-        Packet _mergedPacket;               // IntPtr.Size
-        Packet _next;                       // IntPtr.Size
-        Packet _prev;                       // IntPtr.Size
-        ContainerReader _containerReader;   // IntPtr.Size
+        BufferedReadStream _stream;
 
-        internal Packet Next
-        {
-            get { return _next; }
-            set { _next = value; }
-        }
-        internal Packet Prev
-        {
-            get { return _prev; }
-            set { _prev = value; }
-        }
-        internal bool IsContinued
-        {
-            get { return GetFlag(PacketFlags.User1); }
-            set { SetFlag(PacketFlags.User1, value); }
-        }
-        internal bool IsContinuation
-        {
-            get { return GetFlag(PacketFlags.User2); }
-            set { SetFlag(PacketFlags.User2, value); }
-        }
+        long _offset;
+        long _length;
+        Packet _mergedPacket;
 
-        internal Packet(ContainerReader containerReader, long streamOffset, int length)
+        internal Packet Next { get; set; }
+        internal Packet Prev { get; set; }
+        internal bool IsContinued { get; set; }
+        internal bool IsContinuation { get; set; }
+
+        int _curOfs;
+
+        internal Packet(BufferedReadStream stream, long streamOffset, int length)
             : base(length)
         {
-            _containerReader = containerReader;
+            _stream = stream;
 
             _offset = streamOffset;
             _length = length;
@@ -96,11 +80,10 @@ namespace NVorbis.Ogg
                 return _mergedPacket.ReadNextByte();
             }
 
-            var b = _containerReader.PacketReadByte(_offset + _curOfs);
-            if (b != -1)
-            {
-                ++_curOfs;
-            }
+            _stream.Seek(_curOfs + _offset, SeekOrigin.Begin);
+
+            var b = _stream.ReadByte();
+            ++_curOfs;
             return b;
         }
 
@@ -112,7 +95,7 @@ namespace NVorbis.Ogg
             }
             else
             {
-                _containerReader.PacketDiscardThrough(_offset + _length);
+                _stream.DiscardThrough(_offset + _length);
             }
         }
     }

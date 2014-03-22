@@ -1,6 +1,6 @@
 ﻿/****************************************************************************
  * NVorbis                                                                  *
- * Copyright (C) 2014, Andrew Ward <afward@gmail.com>                       *
+ * Copyright (C) 2012, Andrew Ward <afward@gmail.com>                       *
  *                                                                          *
  * See COPYING for license terms (Ms-PL).                                   *
  *                                                                          *
@@ -211,12 +211,11 @@ namespace NVorbis
                             {
                                 for (int j = 0; j < channels; j++)
                                 {
-                                    var idx = _classBook.DecodeScalar(packet);
-                                    if (idx >= 0 && idx < _decodeMap.Length)
+                                    try
                                     {
-                                        _partWordCache[j][l] = _decodeMap[idx];
+                                        _partWordCache[j][l] = _decodeMap[_classBook.DecodeScalar(packet)];
                                     }
-                                    else
+                                    catch (IndexOutOfRangeException)
                                     {
                                         i = partVals;
                                         s = _maxStages;

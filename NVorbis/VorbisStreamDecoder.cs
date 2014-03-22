@@ -1,6 +1,6 @@
 ﻿/****************************************************************************
  * NVorbis                                                                  *
- * Copyright (C) 2014, Andrew Ward <afward@gmail.com>                       *
+ * Copyright (C) 2012, Andrew Ward <afward@gmail.com>                       *
  *                                                                          *
  * See COPYING for license terms (Ms-PL).                                   *
  *                                                                          *
@@ -62,19 +62,15 @@ namespace NVorbis
         #endregion
 
         IPacketProvider _packetProvider;
-        DataPacket _parameterChangePacket;
 
         List<int> _pagesSeen;
         int _lastPageSeen;
 
         bool _eosFound;
 
-        object _seekLock = new object();
-
         internal VorbisStreamDecoder(IPacketProvider packetProvider)
         {
             _packetProvider = packetProvider;
-            _packetProvider.ParameterChange += SetParametersChanging;
 
             _pagesSeen = new List<int>();
             _lastPageSeen = -1;
@@ -82,40 +78,46 @@ namespace NVorbis
 
         internal bool TryInit()
         {
-            // try to process the stream header...
-            if (!ProcessStreamHeader(_packetProvider.PeekNextPacket()))
+            var initialPacket = _packetProvider.GetNextPacket();
+
+            // make sure it's a vorbis stream...
+            if (!initialPacket.ReadBytes(7).SequenceEqual(new byte[] { 0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73 }))
             {
+                _glueBits += initialPacket.Length * 8;
                 return false;
             }
 
-            // seek past the stream header packet
-            _packetProvider.GetNextPacket().Done();
+            _glueBits += 56;
 
-            // load the comments header...
-            var packet = _packetProvider.GetNextPacket();
-            if (!LoadComments(packet))
-            {
-                throw new InvalidDataException("Comment header was not readable!");
-            }
-            packet.Done();
+            // now load the initial header
+            ProcessStreamHeader(initialPacket);
 
-            // load the book header...
-            packet = _packetProvider.GetNextPacket();
-            if (!LoadBooks(packet))
+            // finally, load the comment and book headers...
+            DataPacket commentsPacket = null, booksPacket = null;
+            while (commentsPacket == null || booksPacket == null)
             {
-                throw new InvalidDataException("Book header was not readable!");
+                var packet = _packetProvider.GetNextPacket();
+                if (packet.IsResync) throw new InvalidDataException("Missing header packets!");
+
+                if (!_pagesSeen.Contains(packet.PageSequenceNumber)) _pagesSeen.Add(packet.PageSequenceNumber);
+
+                switch (packet.PeekByte())
+                {
+                    case 1: throw new InvalidDataException("Found second init header!");
+                    case 3: LoadComments(packet); commentsPacket = packet; break;
+                    case 5: LoadBooks(packet); booksPacket = packet; break;
+                }
             }
-            packet.Done();
+
+            // tell the packets that we're done with them
+            initialPacket.Done();
+            commentsPacket.Done();
+            booksPacket.Done();
 
             // get the decoding logic bootstrapped
             InitDecoder();
 
             return true;
-        }
-
-        void SetParametersChanging(object sender, ParameterChangeEventArgs e)
-        {
-            _parameterChangePacket = e.FirstPacket;
         }
 
         public void Dispose()
@@ -124,73 +126,15 @@ namespace NVorbis
             {
                 var temp = _packetProvider;
                 _packetProvider = null;
-                temp.ParameterChange -= SetParametersChanging;
                 temp.Dispose();
             }
         }
 
         #region Header Decode
 
-        void ProcessParameterChange(DataPacket packet)
+        void ProcessStreamHeader(DataPacket packet)
         {
-            _parameterChangePacket = null;
-
-            // try to do a stream header...
-            var wasPeek = false;
-            var doFullReset = false;
-            if (ProcessStreamHeader(packet))
-            {
-                packet.Done();
-                wasPeek = true;
-                doFullReset = true;
-                packet = _packetProvider.PeekNextPacket();
-                if (packet == null) throw new InvalidDataException("Couldn't get next packet!");
-            }
-
-            // try to do a comment header...
-            if (LoadComments(packet))
-            {
-                if (wasPeek)
-                {
-                    _packetProvider.GetNextPacket().Done();
-                }
-                else
-                {
-                    packet.Done();
-                }
-                wasPeek = true;
-                packet = _packetProvider.PeekNextPacket();
-                if (packet == null) throw new InvalidDataException("Couldn't get next packet!");
-            }
-
-            // try to do a book header...
-            if (LoadBooks(packet))
-            {
-                if (wasPeek)
-                {
-                    _packetProvider.GetNextPacket().Done();
-                }
-                else
-                {
-                    packet.Done();
-                }
-            }
-
-            ResetDecoder(doFullReset);
-        }
-
-        bool ProcessStreamHeader(DataPacket packet)
-        {
-            if (!packet.ReadBytes(7).SequenceEqual(new byte[] { 0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73 }))
-            {
-                // don't mark the packet as done... it might be used elsewhere
-                _glueBits += packet.Length * 8;
-                return false;
-            }
-
-            if (!_pagesSeen.Contains((_lastPageSeen = packet.PageSequenceNumber))) _pagesSeen.Add(_lastPageSeen);
-
-            _glueBits += 56;
+            _pagesSeen.Add(packet.PageSequenceNumber);
 
             var startPos = packet.BitsRead;
 
@@ -216,18 +160,12 @@ namespace NVorbis
             _metaBits += packet.BitsRead - startPos + 8;
 
             _wasteHdrBits += 8 * packet.Length - packet.BitsRead;
-
-            return true;
         }
 
-        bool LoadComments(DataPacket packet)
+        void LoadComments(DataPacket packet)
         {
-            if (!packet.ReadBytes(7).SequenceEqual(new byte[] { 0x03, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73 }))
-            {
-                return false;
-            }
-
-            if (!_pagesSeen.Contains((_lastPageSeen = packet.PageSequenceNumber))) _pagesSeen.Add(_lastPageSeen);
+            packet.SkipBits(8);
+            if (!packet.ReadBytes(6).SequenceEqual(new byte[] { 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73 })) throw new InvalidDataException("Corrupted comment header!");
 
             _glueBits += 56;
 
@@ -241,18 +179,12 @@ namespace NVorbis
 
             _metaBits += packet.BitsRead - 56;
             _wasteHdrBits += 8 * packet.Length - packet.BitsRead;
-
-            return true;
         }
 
-        bool LoadBooks(DataPacket packet)
+        void LoadBooks(DataPacket packet)
         {
-            if (!packet.ReadBytes(7).SequenceEqual(new byte[] { 0x05, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73 }))
-            {
-                return false;
-            }
-
-            if (!_pagesSeen.Contains((_lastPageSeen = packet.PageSequenceNumber))) _pagesSeen.Add(_lastPageSeen);
+            packet.SkipBits(8);
+            if (!packet.ReadBytes(6).SequenceEqual(new byte[] { 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73 })) throw new InvalidDataException("Corrupted book header!");
 
             var bits = packet.BitsRead;
 
@@ -325,8 +257,6 @@ namespace NVorbis
             _wasteHdrBits += 8 * packet.Length - packet.BitsRead;
 
             _modeFieldBits = Utils.ilog(Modes.Length - 1);
-
-            return true;
         }
 
         #endregion
@@ -343,59 +273,52 @@ namespace NVorbis
         Stack<DataPacket> _resyncQueue;
 
         long _currentPosition;
-        long _reportedPosition;
 
         VorbisMode _mode;
         bool _prevFlag, _nextFlag;
         bool[] _noExecuteChannel;
         VorbisFloor.PacketData[] _floorData;
         float[][] _residue;
-        bool _isParameterChange;
 
         void InitDecoder()
         {
+            if (_outputBuffer != null)
+            {
+                SaveBuffer();
+            }
+
+            _noExecuteChannel = new bool[_channels];
+            _floorData = new VorbisFloor.PacketData[_channels];
+
+            _residue = new float[_channels][];
+            for (int i = 0; i < _channels; i++)
+            {
+                _residue[i] = new float[Block1Size];
+            }
+
+            _outputBuffer = new RingBuffer(Block1Size * 2 * _channels);
+            _outputBuffer.Channels = _channels;
+
+            _preparedLength = 0;
             _currentPosition = 0L;
 
             _resyncQueue = new Stack<DataPacket>();
 
             _bitsPerPacketHistory = new Queue<int>();
             _sampleCountHistory = new Queue<int>();
-
-            ResetDecoder(true);
         }
 
-        void ResetDecoder(bool isFullReset)
+        void ResetDecoder()
         {
-            // this is called when:
-            //  - init (true)
-            //  - parameter change w/ stream header (true)
-            //  - parameter change w/o stream header (false)
-            //  - the decoder encounters a "hiccup" in the data stream (false)
-            //  - a seek happens (false)
+            // this is called when the decoder encounters a "hiccup" in the data stream...
+            // it is also called when a seek happens
 
             // save off the existing "good" data
             if (_preparedLength > 0)
             {
                 SaveBuffer();
             }
-            if (isFullReset)
-            {
-                _noExecuteChannel = new bool[_channels];
-                _floorData = new VorbisFloor.PacketData[_channels];
-
-                _residue = new float[_channels][];
-                for (int i = 0; i < _channels; i++)
-                {
-                    _residue[i] = new float[Block1Size];
-                }
-
-                _outputBuffer = new RingBuffer(Block1Size * 2 * _channels);
-                _outputBuffer.Channels = _channels;
-            }
-            else
-            {
-                _outputBuffer.Clear();
-            }
+            _outputBuffer.Clear();
             _preparedLength = 0;
         }
 
@@ -681,7 +604,7 @@ namespace NVorbis
                     packet = packetProvider.GetNextPacket();
                 }
 
-                // if the packet is null, we've hit the end or the packet reader has been disposed...
+                // if the packet is null, our packet reader is gone...
                 if (packet == null)
                 {
                     _eosFound = true;
@@ -694,15 +617,7 @@ namespace NVorbis
                 // check for resync
                 if (packet.IsResync)
                 {
-                    ResetDecoder(false); // if we're a resync, our current decoder state is invalid...
-                }
-
-                // check for parameter change
-                if (packet == _parameterChangePacket)
-                {
-                    _isParameterChange = true;
-                    ProcessParameterChange(packet);
-                    return;
+                    ResetDecoder(); // if we're a resync, our current decoder state is invalid...
                 }
 
                 if (!UnpackPacket(packet))
@@ -776,48 +691,44 @@ namespace NVorbis
             // now calculate the totals...
             return mode.BlockSize / 4 + prevMode.BlockSize / 4;
         }
-
+        
         #endregion
 
         internal int ReadSamples(float[] buffer, int offset, int count)
         {
             int samplesRead = 0;
 
-            lock (_seekLock)
+            if (_prevBuffer != null)
             {
-                if (_prevBuffer != null)
+                // get samples from the previous buffer's data
+                var cnt = Math.Min(count, _prevBuffer.Length);
+                Buffer.BlockCopy(_prevBuffer, 0, buffer, offset, cnt * sizeof(float));
+
+                // if we have samples left over, rebuild the previous buffer array...
+                if (cnt < _prevBuffer.Length)
                 {
-                    // get samples from the previous buffer's data
-                    var cnt = Math.Min(count, _prevBuffer.Length);
-                    Buffer.BlockCopy(_prevBuffer, 0, buffer, offset, cnt * sizeof(float));
-
-                    // if we have samples left over, rebuild the previous buffer array...
-                    if (cnt < _prevBuffer.Length)
-                    {
-                        var buf = new float[_prevBuffer.Length - cnt];
-                        Buffer.BlockCopy(_prevBuffer, cnt * sizeof(float), buf, 0, (_prevBuffer.Length - cnt) * sizeof(float));
-                        _prevBuffer = buf;
-                    }
-                    else
-                    {
-                        // if no samples left over, clear the previous buffer
-                        _prevBuffer = null;
-                    }
-
-                    // reduce the desired sample count & increase the desired sample offset
-                    count -= cnt;
-                    offset += cnt;
-                    samplesRead = cnt;
+                    var buf = new float[_prevBuffer.Length - cnt];
+                    Buffer.BlockCopy(_prevBuffer, cnt * sizeof(float), buf, 0, (_prevBuffer.Length - cnt) * sizeof(float));
+                    _prevBuffer = buf;
                 }
-                else if (_isParameterChange)
+                else
                 {
-                    throw new InvalidOperationException("Currently pending a parameter change.  Read new parameters before requesting further samples!");
+                    // if no samples left over, clear the previous buffer
+                    _prevBuffer = null;
                 }
 
-                int minSize = count + Block1Size * _channels;
-                _outputBuffer.EnsureSize(minSize);
+                // reduce the desired sample count & increase the desired sample offset
+                count -= cnt;
+                offset += cnt;
+                samplesRead = cnt;
+            }
 
-                while (_preparedLength * _channels < count && !_eosFound && !_isParameterChange)
+            int minSize = count + Block1Size * _channels;
+            _outputBuffer.EnsureSize(minSize);
+
+            while (_preparedLength * _channels < count && !_eosFound)
+            {
+                try
                 {
                     DecodeNextPacket();
 
@@ -828,29 +739,23 @@ namespace NVorbis
                         return ReadSamples(buffer, offset, _prevBuffer.Length);
                     }
                 }
-
-                if (_preparedLength * _channels < count)
+                catch (EndOfStreamException)
                 {
-                    // we can safely assume we've read the last packet...
-                    count = _preparedLength * _channels;
+                    _eosFound = true;
+                    break;
                 }
-
-                _outputBuffer.CopyTo(buffer, offset, count);
-                _preparedLength -= count / _channels;
-                _reportedPosition = _currentPosition - _preparedLength;
             }
+
+            if (_preparedLength * _channels < count)
+            {
+                // we can safely assume we've read the last packet...
+                count = _preparedLength * _channels;
+            }
+
+            _outputBuffer.CopyTo(buffer, offset, count);
+            _preparedLength -= count / _channels;
 
             return samplesRead + count;
-        }
-
-        internal bool IsParameterChange
-        {
-            get { return _isParameterChange; }
-            set
-            {
-                if (value) throw new InvalidOperationException("Only clearing is supported!");
-                _isParameterChange = value;
-            }
         }
 
         internal bool CanSeek
@@ -864,55 +769,48 @@ namespace NVorbis
 
             if (granulePos < 0) throw new ArgumentOutOfRangeException("granulePos");
 
-            DataPacket packet;
+            var targetPacketIndex = 3;
             if (granulePos > 0)
             {
-                packet = _packetProvider.FindPacket(granulePos, GetPacketLength);
-                if (packet == null) throw new ArgumentOutOfRangeException("granulePos");
-            }
-            else
-            {
-                packet = _packetProvider.GetPacket(4);
+                var idx = _packetProvider.FindPacket(granulePos, GetPacketLength);
+                if (idx == -1) throw new ArgumentOutOfRangeException("granulePos");
+                targetPacketIndex = idx - 1;  // move to the previous packet to prime the decoder
             }
 
-            lock (_seekLock)
+            // seek the stream
+            _packetProvider.SeekToPacket(targetPacketIndex);
+
+            // now figure out where we are and how many samples we need to discard...
+            // note that we use the granule position of the "current" packet, since it will be discarded no matter what
+
+            // get the packet that we'll decode next
+            var dataPacket = _packetProvider.PeekNextPacket();
+
+            // now read samples until we are exactly at the granule position requested
+            CurrentPosition = dataPacket.GranulePosition;
+            var cnt = (int)((granulePos - CurrentPosition) * _channels);
+            if (cnt > 0)
             {
-                // seek the stream
-                _packetProvider.SeekToPacket(packet, 1);
-
-                // now figure out where we are and how many samples we need to discard...
-                // note that we use the granule position of the "current" packet, since it will be discarded no matter what
-
-                // get the packet that we'll decode next
-                var dataPacket = _packetProvider.PeekNextPacket();
-
-                // now read samples until we are exactly at the granule position requested
-                CurrentPosition = dataPacket.GranulePosition;
-                var cnt = (int)((granulePos - CurrentPosition) * _channels);
-                if (cnt > 0)
+                var seekBuffer = new float[cnt];
+                while (cnt > 0)
                 {
-                    var seekBuffer = new float[cnt];
-                    while (cnt > 0)
-                    {
-                        var temp = ReadSamples(seekBuffer, 0, cnt);
-                        if (temp == 0) break;   // we're at the end...
-                        cnt -= temp;
-                    }
+                    var temp = ReadSamples(seekBuffer, 0, cnt);
+                    if (temp == 0) break;   // we're at the end...
+                    cnt -= temp;
                 }
             }
         }
 
         internal long CurrentPosition
         {
-            get { return _reportedPosition; }
-            private set
+            get { return _currentPosition - _preparedLength; }
+            set
             {
-                _reportedPosition = value;
                 _currentPosition = value;
                 _preparedLength = 0;
                 _eosFound = false;
 
-                ResetDecoder(false);
+                ResetDecoder();
                 _prevBuffer = null;
             }
         }
@@ -958,12 +856,11 @@ namespace NVorbis
         {
             get
             {
-                var samples = _sampleCountHistory.Sum();
-                if (samples > 0)
+                try
                 {
-                    return (int)((long)_bitsPerPacketHistory.Sum() * _sampleRate / samples);
+                    return (int)((long)_bitsPerPacketHistory.Sum() * _sampleRate / _sampleCountHistory.Sum());
                 }
-                else
+                catch (DivideByZeroException)
                 {
                     return -1;
                 }

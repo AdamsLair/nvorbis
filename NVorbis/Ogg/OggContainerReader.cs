@@ -1,6 +1,6 @@
 ﻿/****************************************************************************
  * NVorbis                                                                  *
- * Copyright (C) 2014, Andrew Ward <afward@gmail.com>                       *
+ * Copyright (C) 2013, Andrew Ward <afward@gmail.com>                       *
  *                                                                          *
  * See COPYING for license terms (Ms-PL).                                   *
  *                                                                          *
@@ -19,11 +19,14 @@ namespace NVorbis.Ogg
         Crc _crc = new Crc();
         BufferedReadStream _stream;
         Dictionary<int, PacketReader> _packetReaders;
-        List<int> _disposedStreamSerials;
+        Dictionary<int, bool> _eosFlags;
+        List<int> _streamSerials, _disposedStreamSerials;
         long _nextPageOffset;
         int _pageCount;
 
         byte[] _readBuffer = new byte[65025];   // up to a full page of data (but no more!)
+
+        object _pageLock = new object();
 
         long _containerBits, _wasteBits;
 
@@ -32,7 +35,7 @@ namespace NVorbis.Ogg
         /// </summary>
         public int[] StreamSerials
         {
-            get { return System.Linq.Enumerable.ToArray<int>(_packetReaders.Keys); }
+            get { return _streamSerials.ToArray(); }
         }
 
         /// <summary>
@@ -57,6 +60,8 @@ namespace NVorbis.Ogg
         public ContainerReader(Stream stream, bool closeOnDispose)
         {
             _packetReaders = new Dictionary<int, PacketReader>();
+            _eosFlags = new Dictionary<int, bool>();
+            _streamSerials = new List<int>();
             _disposedStreamSerials = new List<int>();
 
             _stream = (stream as BufferedReadStream) ?? new BufferedReadStream(stream) { CloseBaseStream = closeOnDispose };
@@ -68,15 +73,15 @@ namespace NVorbis.Ogg
         /// <returns><c>True</c> if a valid logical stream is found, otherwise <c>False</c>.</returns>
         public bool Init()
         {
-            _stream.TakeLock();
-            try
-            {
-                return GatherNextPage() != -1;
-            }
-            finally
-            {
-                _stream.ReleaseLock();
-            }
+            return GatherNextPage() != -1;
+        }
+
+        internal void DisposePacketReader(PacketReader packetReader)
+        {
+            _disposedStreamSerials.Add(packetReader.StreamSerial);
+            _eosFlags[packetReader.StreamSerial] = true;
+            _streamSerials.Remove(packetReader.StreamSerial);
+            _packetReaders.Remove(packetReader.StreamSerial);
         }
 
         /// <summary>
@@ -84,8 +89,7 @@ namespace NVorbis.Ogg
         /// </summary>
         public void Dispose()
         {
-            // don't use _packetReaders directly since that'll change the enumeration...
-            foreach (var streamSerial in StreamSerials)
+            foreach (var streamSerial in _streamSerials.ToArray())
             {
                 _packetReaders[streamSerial].Dispose();
             }
@@ -113,92 +117,6 @@ namespace NVorbis.Ogg
             return provider;
         }
 
-        /// <summary>
-        /// Finds the next new stream in the container.
-        /// </summary>
-        /// <returns><c>True</c> if a new stream was found, otherwise <c>False</c>.</returns>
-        /// <exception cref="InvalidOperationException"><see cref="CanSeek"/> is <c>False</c>.</exception>
-        public bool FindNextStream()
-        {
-            if (!CanSeek) throw new InvalidOperationException();
-
-            // goes through all the pages until the serial count increases
-            var cnt = this._packetReaders.Count;
-            while (this._packetReaders.Count == cnt)
-            {
-                _stream.TakeLock();
-                try
-                {
-                    // acquire & release the lock every pass so we don't block any longer than necessary
-                    if (GatherNextPage() == -1)
-                    {
-                        break;
-                    }
-                }
-                finally
-                {
-                    _stream.ReleaseLock();
-                }
-            }
-            return cnt > this._packetReaders.Count;
-        }
-
-        /// <summary>
-        /// Gets the number of pages that have been read in the container.
-        /// </summary>
-        public int PagesRead
-        {
-            get { return _pageCount; }
-        }
-
-        /// <summary>
-        /// Retrieves the total number of pages in the container.
-        /// </summary>
-        /// <returns>The total number of pages.</returns>
-        /// <exception cref="InvalidOperationException"><see cref="CanSeek"/> is <c>False</c>.</exception>
-        public int GetTotalPageCount()
-        {
-            if (!CanSeek) throw new InvalidOperationException();
-
-            // just read pages until we can't any more...
-            while (true)
-            {
-                _stream.TakeLock();
-                try
-                {
-                    // acquire & release the lock every pass so we don't block any longer than necessary
-                    if (GatherNextPage() == -1)
-                    {
-                        break;
-                    }
-                }
-                finally
-                {
-                    _stream.ReleaseLock();
-                }
-            }
-
-            return _pageCount;
-        }
-
-        /// <summary>
-        /// Gets whether the container supports seeking.
-        /// </summary>
-        public bool CanSeek
-        {
-            get { return _stream.CanSeek; }
-        }
-
-        /// <summary>
-        /// Gets the number of bits in the container that are not associated with a logical stream.
-        /// </summary>
-        public long WasteBits
-        {
-            get { return _wasteBits; }
-        }
-
-
-        // private implmentation bits
         class PageHeader
         {
             public int StreamSerial { get; set; }
@@ -217,7 +135,6 @@ namespace NVorbis.Ogg
             _stream.Seek(position, SeekOrigin.Begin);
 
             // header
-            // NB: if the stream didn't have an EOS flag, this is the most likely spot for the EOF to be found...
             if (_stream.Read(_readBuffer, 0, 27) != 27) return null;
 
             // capture signature
@@ -258,7 +175,7 @@ namespace NVorbis.Ogg
 
             // figure out the length of the page
             var segCnt = (int)_readBuffer[26];
-            if (_stream.Read(_readBuffer, 0, segCnt) != segCnt) return null;
+            if (_stream.Read(_readBuffer, 0, segCnt) != segCnt) throw new EndOfStreamException();
 
             var packetSizes = new List<int>(segCnt);
 
@@ -286,7 +203,7 @@ namespace NVorbis.Ogg
             hdr.DataOffset = position + 27 + segCnt;
 
             // now we have to go through every byte in the page
-            if (_stream.Read(_readBuffer, 0, size) != size) return null;
+            if (_stream.Read(_readBuffer, 0, size) != size) throw new EndOfStreamException();
             for (int i = 0; i < size; i++)
             {
                 _crc.Update(_readBuffer[i]);
@@ -316,8 +233,7 @@ namespace NVorbis.Ogg
                 var cnt = 0;
                 do
                 {
-                    var b = _stream.ReadByte();
-                    if (b == 0x4f)
+                    if (_stream.ReadByte() == 0x4f)
                     {
                         if (_stream.ReadByte() == 0x67 && _stream.ReadByte() == 0x67 && _stream.ReadByte() == 0x53)
                         {
@@ -329,10 +245,6 @@ namespace NVorbis.Ogg
                         {
                             _stream.Seek(-3, SeekOrigin.Current);
                         }
-                    }
-                    else if (b == -1)
-                    {
-                        return null;
                     }
                     _wasteBits += 8;
                 } while (++cnt < 65536);    // we will only search through 64KB of data to find the next sync marker.  if it can't be found, we have a badly corrupted stream.
@@ -373,7 +285,7 @@ namespace NVorbis.Ogg
             var cnt = hdr.PacketSizes.Length;
             foreach (var size in hdr.PacketSizes)
             {
-                var packet = new Packet(this, dataOffset, size)
+                var packet = new Packet(_stream, dataOffset, size)
                     {
                         PageGranulePosition = hdr.GranulePosition,
                         IsEndOfStream = isEOS,
@@ -398,17 +310,48 @@ namespace NVorbis.Ogg
                 }
             }
 
-            // if the packet reader list doesn't include the serial in question, add it to the list and indicate a new stream to the caller
+            // if the packet reader list doesn't include the serial in question, add it to all the collections and indicate a new stream to the caller
             if (!_packetReaders.ContainsKey(hdr.StreamSerial))
             {
-                _packetReaders.Add(hdr.StreamSerial, packetReader);
+                var ss = hdr.StreamSerial;
+                _packetReaders.Add(ss, packetReader);
+                _eosFlags.Add(ss, isEOS);
+                _streamSerials.Add(ss);
+
                 return true;
             }
             else
             {
-                // otherwise, indicate an existing stream to the caller
+                // otherwise, update the end of stream marker for the stream and indicate an existing stream to the caller
+                _eosFlags[hdr.StreamSerial] |= isEOS;
                 return false;
             }
+        }
+
+        internal class PageReaderLock : IDisposable
+        {
+            object _lock;
+
+            public PageReaderLock(object pageLock)
+            {
+                System.Threading.Monitor.Enter(pageLock);
+                _lock = pageLock;
+            }
+
+            public bool Validate(object pageLock)
+            {
+                return object.ReferenceEquals(pageLock, _lock);
+            }
+
+            public void Dispose()
+            {
+                System.Threading.Monitor.Exit(_lock);
+            }
+        }
+
+        internal PageReaderLock TakePageReaderLock()
+        {
+            return new PageReaderLock(_pageLock);
         }
 
         int GatherNextPage()
@@ -444,70 +387,101 @@ namespace NVorbis.Ogg
             }
         }
 
-        // packet reader bits...
-        internal void DisposePacketReader(PacketReader packetReader)
+        /// <summary>
+        /// Gathers pages until finding a page for the stream indicated
+        /// </summary>
+        internal void GatherNextPage(int streamSerial, PageReaderLock pageLock)
         {
-            _disposedStreamSerials.Add(packetReader.StreamSerial);
-            _packetReaders.Remove(packetReader.StreamSerial);
-        }
+            // pageLock is just so we know the caller took a lock... we don't actually need it for anything else
 
-        internal int PacketReadByte(long offset)
-        {
-            _stream.TakeLock();
-            try
-            {
-                _stream.Position = offset;
-                return _stream.ReadByte();
-            }
-            finally
-            {
-                _stream.ReleaseLock();
-            }
-        }
-
-        internal void PacketDiscardThrough(long offset)
-        {
-            _stream.TakeLock();
-            try
-            {
-                _stream.DiscardThrough(offset);
-            }
-            finally
-            {
-                _stream.ReleaseLock();
-            }
-        }
-
-        internal void GatherNextPage(int streamSerial)
-        {
-            if (!_packetReaders.ContainsKey(streamSerial)) throw new ArgumentOutOfRangeException("streamSerial");
+            if (pageLock == null) throw new ArgumentNullException("pageLock");
+            if (!pageLock.Validate(_pageLock)) throw new ArgumentException("pageLock");
+            if (!_eosFlags.ContainsKey(streamSerial)) throw new ArgumentOutOfRangeException("streamSerial");
 
             int nextSerial;
             do
             {
-                _stream.TakeLock();
-                try
-                {
-                    if (_packetReaders[streamSerial].HasEndOfStream) break;
+                if (_eosFlags[streamSerial]) throw new EndOfStreamException();
+                
+                nextSerial = GatherNextPage();
+                if (nextSerial == -1) throw new InvalidDataException("Could not find next page.");
+            } while (nextSerial != streamSerial);
+        }
 
-                    nextSerial = GatherNextPage();
-                    if (nextSerial == -1)
+        /// <summary>
+        /// Finds the next new stream in the container.
+        /// </summary>
+        /// <returns><c>True</c> if a new stream was found, otherwise <c>False</c>.</returns>
+        /// <exception cref="InvalidOperationException"><see cref="CanSeek"/> is <c>False</c>.</exception>
+        public bool FindNextStream()
+        {
+            if (!CanSeek) throw new InvalidOperationException();
+
+            // goes through all the pages until the serial count increases
+            var cnt = this._packetReaders.Count;
+            using (var pageLock = TakePageReaderLock())
+            {
+                // read pages until we're done...
+                while (this._packetReaders.Count == cnt)
+                {
+                    if (GatherNextPage() == -1)
                     {
-                        foreach (var reader in _packetReaders)
-                        {
-                            if (!reader.Value.HasEndOfStream)
-                            {
-                                reader.Value.SetEndOfStream();
-                            }
-                        }
                         break;
                     }
                 }
-                finally
+
+                return cnt > this._packetReaders.Count;
+            }
+        }
+
+        /// <summary>
+        /// Gets the number of pages that have been read in the container.
+        /// </summary>
+        public int PagesRead
+        {
+            get { return _pageCount; }
+        }
+
+        /// <summary>
+        /// Retrieves the total number of pages in the container.
+        /// </summary>
+        /// <returns>The total number of pages.</returns>
+        /// <exception cref="InvalidOperationException"><see cref="CanSeek"/> is <c>False</c>.</exception>
+        public int GetTotalPageCount()
+        {
+            if (!CanSeek) throw new InvalidOperationException();
+
+            // add an invalid stream serial as a dummy...
+            _eosFlags.Add(-1, false);
+
+            // there cannot possibly be another page less than 28 bytes from the end of the file
+            while (_stream.Position < _stream.Length - 28)
+            {
+                using (var pageLock = TakePageReaderLock())
                 {
-                    _stream.ReleaseLock();
+                    GatherNextPage(-1, pageLock);
                 }
-            } while (nextSerial != streamSerial);
+            }
+
+            _eosFlags.Remove(-1);
+
+            return _pageCount;
+        }
+
+        /// <summary>
+        /// Gets whether the container supports seeking.
+        /// </summary>
+        public bool CanSeek
+        {
+            get { return _stream.CanSeek; }
+        }
+
+        /// <summary>
+        /// Gets the number of bits in the container that are not associated with a logical stream.
+        /// </summary>
+        public long WasteBits
+        {
+            get { return _wasteBits; }
         }
     }
 }
