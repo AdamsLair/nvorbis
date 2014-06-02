@@ -5,7 +5,7 @@ msbuild /t:Rebuild /p:Configuration=Release /p:Platform="Any CPU" NVorbis.sln
 del *.nupkg
 
 :: build the nuget packages
-.nuget\nuget pack NVorbis\NVorbis.csproj
+.nuget\nuget pack NVorbis\NVorbis.csproj -Properties Configuration=Release
 
 :: upload the nuget packages
 .nuget\nuget push *.nupkg
