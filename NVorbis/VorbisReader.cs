@@ -30,11 +30,6 @@ namespace NVorbis
 
         }
 
-        public VorbisReader(string fileName)
-            : this(File.Open(fileName, FileMode.Open, FileAccess.Read, FileShare.Read), true)
-        {
-        }
-
         public VorbisReader(Stream stream, bool closeStreamOnDispose)
             : this()
         {
@@ -47,7 +42,7 @@ namespace NVorbis
             {
                 // oops, not Ogg!
                 // we don't support any other container types yet, so error out
-                bufferedStream.Close();
+                bufferedStream.Dispose();
                 throw new InvalidDataException("Could not determine container type!");
             }
             _containerReader = oggContainer;

@@ -169,12 +169,16 @@ namespace NVorbis
 
             _glueBits += 56;
 
-            _vendor = Encoding.UTF8.GetString(packet.ReadBytes(packet.ReadInt32()));
+			{
+				byte[] vendorBytes = packet.ReadBytes(packet.ReadInt32());
+				_vendor = Encoding.UTF8.GetString(vendorBytes, 0, vendorBytes.Length);
+			}
 
             _comments = new string[packet.ReadInt32()];
             for (int i = 0; i < _comments.Length; i++)
             {
-                _comments[i] = Encoding.UTF8.GetString(packet.ReadBytes(packet.ReadInt32()));
+				byte[] commentBytes = packet.ReadBytes(packet.ReadInt32());
+                _comments[i] = Encoding.UTF8.GetString(commentBytes, 0, commentBytes.Length);
             }
 
             _metaBits += packet.BitsRead - 56;

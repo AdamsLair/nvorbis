@@ -2,7 +2,7 @@
 <package>
   <metadata>
     <id>AdamsLair.NVorbis</id>
-    <version>$version$</version>
+    <version>0.7.5</version>
 	<authors>See original project authors</authors>
     <title>AdamsLair.NVorbis</title>
     <projectUrl>https://github.com/AdamsLair/nvorbis</projectUrl>

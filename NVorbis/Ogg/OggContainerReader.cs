@@ -44,15 +44,6 @@ namespace NVorbis.Ogg
         public event EventHandler<NewStreamEventArgs> NewStream;
 
         /// <summary>
-        /// Creates a new instance with the specified file.
-        /// </summary>
-        /// <param name="path">The full path to the file.</param>
-        public ContainerReader(string path)
-            : this(File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read), true)
-        {
-        }
-
-        /// <summary>
         /// Creates a new instance with the specified stream.  Optionally sets to close the stream when disposed.
         /// </summary>
         /// <param name="stream">The stream to read.</param>
