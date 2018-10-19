@@ -95,3 +95,5 @@ History
     * Bugfix: Fix residue 1
 0.7.4 - 09/16/2013
     * Bugfix: Some stereo files with sound on only one channel decoded noise on the silent channel.
+0.7.6 - 10/19/2018
+    * Provided mulit target nuspec and NetStandard implementation
