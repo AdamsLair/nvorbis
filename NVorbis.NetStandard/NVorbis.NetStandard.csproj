@@ -2,6 +2,24 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard1.0</TargetFramework>
+    <Version>0.7.6</Version>
+    <AssemblyName>NVorbis.NetStandard</AssemblyName>
+    <RootNamespace>NVorbis</RootNamespace>
+    <PackageId>AdamsLair.NVorbis</PackageId>
+    <Authors>See original project authors</Authors>
+    <Company />
+    <Product>AdamsLair.NVorbis</Product>
+    <Description>A custom version of NVorbis for being used with the Duality framework. Forked from http://nvorbis.codeplex.com/</Description>
+    <PackageProjectUrl>https://github.com/AdamsLair/nvorbis</PackageProjectUrl>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <AssemblyVersion>0.7.6.0</AssemblyVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <DocumentationFile>..\bin\NVorbis.NetStandard.xml</DocumentationFile>
+    <OutputPath>..\bin\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
