@@ -1,0 +1,27 @@
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+  <metadata>
+    <id>AdamsLair.NVorbis</id>
+    <version>0.7.6</version>
+	<authors>See original project authors</authors>
+    <title>AdamsLair.NVorbis</title>
+    <projectUrl>https://github.com/AdamsLair/nvorbis</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>A custom version of NVorbis for being used with the Duality framework. Forked from http://nvorbis.codeplex.com/</description>
+    <references>
+        <group targetFramework="portable-net45+netcore45+wpa81">
+            <reference file="NVorbis.NetPortable.dll" />
+            <reference file="NVorbis.NetPortable.xml" />
+        </group>
+        <group targetFramework="netstandard1.0">
+            <reference file="NVorbis.NetStandard.dll" />
+            <reference file="NVorbis.NetStandard.xml" />
+        </group>
+    </references>
+  </metadata>
+  <files>
+    <file src="bin\NetPortable\NVorbis.NetPortable.dll" target="lib\portable-net45" />
+	<file src="bin\NetPortable\NVorbis.NetPortable.xml" target="lib\portable-net45" />
+	<file src="bin\netstandard1.0\NVorbis.NetStandard.dll" target="lib\netstandard1.0" />
+	<file src="bin\netstandard1.0\NVorbis.NetStandard.xml" target="lib\netstandard1.0" />
+  </files>
+</package>

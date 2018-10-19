@@ -119,3 +119,4 @@ ehthumbs.db
 Desktop.ini
 
 *.zip
+/.vs*
